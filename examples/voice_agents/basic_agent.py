@@ -1,6 +1,13 @@
 import logging
-
+import os
 from dotenv import load_dotenv
+# Import your new class. 
+# Since it's in the same 'examples' dir, this relative import works.
+from.interrupt_handler import AsyncSafeInterruptHandler
+
+#
+# --- (Other imports like livekit.agents, silero, openai...) ---
+#
 
 from livekit.agents import (
     Agent,
@@ -15,6 +22,14 @@ from livekit.agents import (
     cli,
     metrics,
 )
+
+from livekit.plugins import (
+    deepgram,
+    elevenlabs,
+    openai,
+    silero
+)
+
 from livekit.agents.llm import function_tool
 from livekit.plugins import silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
@@ -25,6 +40,10 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 logger = logging.getLogger("basic-agent")
 
 load_dotenv()
+
+# Load and parse the configurable ignored words from environment 
+IGNORED_WORDS_STR = os.environ.get("IGNORED_WORDS", "uh,umm,hmm,haan")
+IGNORED_WORDS_SET = set(IGNORED_WORDS_STR.split(','))
 
 
 class MyAgent(Agent):
@@ -69,11 +88,19 @@ def prewarm(proc: JobProcess):
 
 
 async def entrypoint(ctx: JobContext):
+    logging.info(f"Using ignored words: {IGNORED_WORDS_SET}")
     # each log entry will include these fields
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
+
+    agent = Agent(
+        instructions="You are a friendly voice assistant." 
+        #... your other agent params
+    )
+
     session = AgentSession(
+        vad=silero.VAD.load(),
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
         # See all available models at https://docs.livekit.io/agents/models/stt/
         stt="assemblyai/universal-streaming:en",
@@ -94,7 +121,14 @@ async def entrypoint(ctx: JobContext):
         # when it's detected, you may resume the agent's speech
         resume_false_interruption=True,
         false_interruption_timeout=1.0,
+        allow_interruptions=False,  # disable built-in interruption handling
     )
+
+    # 1. Instantiate the handler with your config
+    interrupt_handler = AsyncSafeInterruptHandler(ignored_words=IGNORED_WORDS_SET)
+
+    # 2. Attach the handler to the session's event loop
+    interrupt_handler.attach(session)
 
     # log metrics as they are emitted, and total usage after session is over
     usage_collector = metrics.UsageCollector()
